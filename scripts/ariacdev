@@ -1,0 +1,8 @@
+#!/usr/bin/bash
+ros2 launch ariac_gazebo ariac.launch.py \
+ dev_mode:=true \
+ ;
+#  trial_name:=<> \
+#  competitor_package:=<> \
+#  sensor_config:=<> \
+#  record_state:=true
