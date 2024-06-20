@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+ros2 launch nist_competitor competition.launch.py trial_name:=kitting record_state:=false

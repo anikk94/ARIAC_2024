@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/env bash
 ros2 launch ariac_gazebo ariac.launch.py \
  dev_mode:=true \
  ;
