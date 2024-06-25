@@ -16,10 +16,12 @@ from ariac_msgs.msg import (
     PartPose,
     Parts,
     Part,
-    KittingPart
+    KittingPart,
+    VacuumGripperState,
 )
 from ariac_msgs.srv import (
     SubmitOrder,
+    VacuumGripperControl
 
 )
 from std_srvs.srv import Trigger
@@ -29,6 +31,7 @@ from std_msgs.msg import (
 from geometry_msgs.msg import (
     Pose,
     PoseStamped,
+    Quaternion
 )
 
 from moveit import MoveItPy
@@ -44,6 +47,13 @@ import PyKDL
 
 import sys
 import signal
+
+from copy import deepcopy
+
+
+from typing import List, Tuple
+
+import math
 
 # handle ^C
 def signal_handler(sig, frame):
@@ -129,6 +139,18 @@ class ARIACenv:
     # warehouse?
     warehouse = []
 
+    # ARIAC part dimensions
+    # L x B(W) x H
+    part_sizes = {
+        Part.BATTERY: [0.13, 0.05, 0.04],
+        # TODO
+        Part.PUMP: [0.1, 0.1, 0.12],
+        # TODO
+        Part.SENSOR: [],
+        # TODO
+        Part.REGULATOR: [],
+    }
+
     def __init__(self):
         pass
 
@@ -187,6 +209,41 @@ class ARIACenv:
         pose.orientation.w = q[3]
         
         return pose
+
+    def rpy_from_quaternion(self, q: Quaternion) -> Tuple[float, float, float]:
+        ''' 
+        Use KDL to convert a quaternion to euler angles roll, pitch, yaw.
+        Args:
+            q (Quaternion): quaternion to convert
+        Returns:
+            Tuple[float, float, float]: roll, pitch, yaw
+        '''
+        
+        R = PyKDL.Rotation.Quaternion(q.x, q.y, q.z, q.w)
+        return R.GetRPY()
+
+    # def quaternion_from_euler(roll: float, pitch: float, yaw: float) -> Quaternion:
+    def quaternion_from_rpy(self, roll: float, pitch: float, yaw: float) -> Quaternion:
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+
+        q = [0] * 4
+        q[0] = cy * cp * cr + sy * sp * sr
+        q[1] = cy * cp * sr - sy * sp * cr
+        q[2] = sy * cp * sr + cy * sp * cr
+        q[3] = sy * cp * cr - cy * sp * sr
+
+        q_msg = Quaternion()
+        q_msg.w = q[0]
+        q_msg.x = q[1]
+        q_msg.y = q[2]
+        q_msg.z = q[3]
+
+        return q_msg
 
 # WorldData class ends here
 ariac_env = ARIACenv()
@@ -512,6 +569,10 @@ class OrderProcessor(Node):
 
             for _part in o.kitting_task.parts:
                 _part: KittingPart
+
+                if _part.part.type == Part.BATTERY:
+                    continue
+
                 # self.get_logger().info(f"\t{_part.part.color} {_part.part.type}")
                 # self.get_logger().info(f"\t{self.colors[_part.part.color]} {self.types[_part.part.type]}")
                 # self.get_logger().info(f"\t---")
@@ -525,7 +586,10 @@ class OrderProcessor(Node):
                     # equip gripper
                     # ariac_env.robots.floor_robot_equip_gripper()
 
-                    ariac_env.robots.floor_robot_kitting_PP_part(part_validated, _part.quadrant)
+                    # ariac_env.robots.floor_robot_kitting_PP_part(part_validated, _part.quadrant)
+                    ariac_env.robots.floor_robot_kitting_PP_part(part_validated, _part.part.type, _part.quadrant)
+                    # TODO
+                    break
                 else:
                     self.get_logger().error(f"part missing {_part.part.type, _part.part.color}")
                     break
@@ -634,8 +698,24 @@ class Sensors(Node):
 
 
 class Robots(Node):
+    '''
+    robots node
+    sub1 - floor robot gripper state
+    sub2 - ceiling robot gripper state
+    cli1 - floor robot gripper client
+    cli2 - ceiling robot gripper client
+    cb_group_1 - [ME] gripper state
+    '''
     def __init__(self):
         super().__init__("Robots")
+
+        self.gripper_states = {
+            True: "enabled",
+            False: "disabled",
+        }
+
+        self.cb_group_1 = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
+
 
         self._ariac_robots = MoveItPy(node_name="ariac_robots_moveit_py")
         self._ariac_robots_state = RobotState(
@@ -645,6 +725,8 @@ class Robots(Node):
             "floor_robot")
         self._ceiling_robot = self._ariac_robots.get_planning_component(
             "ceiling_robot")
+        self._floor_arm = self._ariac_robots.get_planning_component(
+            "floor_arm")
 
         # self._floor_robot_home_quaternion = Quaternion()
         # self._ceiling_robot_home_quaternion = Quaternion()
@@ -663,8 +745,27 @@ class Robots(Node):
             GetCartesianPath, "compute_cartesian_path")
         self.get_position_fk_client = self.create_client(
             GetPositionFK, "compute_fk")
+        
+        self.sub1 = self.create_subscription(
+            VacuumGripperState,
+            "/ariac/floor_robot_gripper_state",
+            self.sub1_cb,
+            10, 
+            callback_group=self.cb_group_1,
+        )
 
-    def floor_robot_kitting_PP_part(self, pose, quadrant):
+        self.cli1 =  self.create_client(
+            VacuumGripperControl,
+            "/ariac/floor_robot_enable_gripper",
+        )
+
+
+    def sub1_cb(self, msg: VacuumGripperState):
+        self.floor_robot_gripper_state = msg
+
+
+    def floor_robot_kitting_PP_part(self, pose, type, quadrant):
+    # def floor_robot_kitting_PP_part(self, pose, quadrant):
         '''
         move to part in bin
         pick part
@@ -673,7 +774,7 @@ class Robots(Node):
         '''
         pose: Pose
 
-        mod_pose = pose
+        mod_pose = deepcopy(pose)
 
         self.log_pose("target pose", pose)
 
@@ -681,6 +782,7 @@ class Robots(Node):
 
         with self._planning_scene_monitor.read_write() as scene:
             scene.current_state.update()
+
             self._ariac_robots_state = scene.current_state
 
             gripper_current_pose = self._ariac_robots_state.get_pose("floor_gripper")
@@ -689,13 +791,124 @@ class Robots(Node):
 
             # increase the height of the gripper in the pose goal
             mod_pose.position.z += 0.3
+
             mod_pose.orientation = gripper_current_pose.orientation
 
             self.log_pose("mod_pose", mod_pose)
                         
-        self.get_logger().info("--- floor_robot_kitting_PP_part() ---")
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 1 ---")
         
         self.floor_robot_move_to_pose(mod_pose)
+
+        mod_pose = deepcopy(pose)
+
+        with self._planning_scene_monitor.read_write() as scene:
+            scene.current_state.update()
+
+            self._ariac_robots_state = scene.current_state
+
+            gripper_current_pose = self._ariac_robots_state.get_pose("floor_gripper")
+            
+            self.log_pose("gripper current pose", gripper_current_pose)
+
+            # increase the height of the gripper in the pose goal
+            mod_pose.position.z += ariac_env.part_sizes[type][2] #+ 0.002
+
+            mod_pose.orientation = gripper_current_pose.orientation
+
+            self.log_pose("mod_pose", mod_pose)
+
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 2 ---")
+        
+        self.floor_robot_move_to_pose(mod_pose)
+                        
+        self.floor_robot_set_gripper_state(True)
+
+        mod_pose = deepcopy(pose)
+
+        with self._planning_scene_monitor.read_write() as scene:
+            scene.current_state.update()
+            self._ariac_robots_state = scene.current_state
+            gripper_current_pose = self._ariac_robots_state.get_pose("floor_gripper")
+            self.log_pose("gripper current pose", gripper_current_pose)
+
+            # increase the height of the gripper in the pose goal
+            mod_pose.position.z += 0.3
+
+            mod_pose.orientation = gripper_current_pose.orientation
+
+            self.log_pose("mod_pose", mod_pose)
+
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 3 ---")
+        
+        self.floor_robot_move_to_pose(mod_pose)
+
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 4 ---")
+
+        self.floor_arm_move_to_saved_position("upright")
+
+        with self._planning_scene_monitor.read_write() as scene:
+            self._floor_robot.set_start_state(robot_state=scene.current_state)
+
+            rs = RobotState(self._ariac_robots.get_robot_model())
+            rs.set_joint_group_positions("floor_arm", [1.571, -1.571, 1.571, -1.571, -1.571, 0.0])
+
+            self._floor_robot.set_goal_state(robot_state=rs)
+
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 5 ---")
+
+        self._plan_and_execute(self._ariac_robots, self._floor_arm,
+                                self.get_logger(), "floor_arm", sleep_time=0.0)
+
+
+        with self._planning_scene_monitor.read_write() as scene:
+            scene.current_state.update()
+            self._ariac_robots_state = scene.current_state
+            gripper_current_pose = self._ariac_robots_state.get_pose("floor_gripper")
+            self.log_pose("gripper current pose", gripper_current_pose)
+
+            # increase the height of the gripper in the pose goal
+            mod_pose = Pose()
+            mod_pose.position.x = -1.3
+            mod_pose.position.y = 4.8
+            mod_pose.position.z = 0.93 + 0.1/2 + ariac_env.part_sizes[type][2] + 0.01
+            mod_pose.orientation = gripper_current_pose.orientation
+
+            self.log_pose("mod_pose", mod_pose)
+
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 6 ---")
+
+        self.floor_robot_move_to_pose(mod_pose)
+
+        with self._planning_scene_monitor.read_write() as scene:
+            scene.current_state.update()
+            self._ariac_robots_state = scene.current_state
+            gripper_current_pose = self._ariac_robots_state.get_pose("floor_gripper")
+            self.log_pose("gripper current pose", gripper_current_pose)
+
+            # increase the height of the gripper in the pose goal
+            mod_pose = Pose()
+            mod_pose.position.x = -1.3
+            mod_pose.position.y = 4.8
+            mod_pose.position.z = 0.93 + 0.1/2 + ariac_env.part_sizes[type][2] + 0.01
+
+            temp_orientation_rpy = list(ariac_env.rpy_from_quaternion(gripper_current_pose.orientation))
+            temp_orientation_rpy[1] += math.pi/2
+            temp_orientation_q = ariac_env.quaternion_from_rpy(temp_orientation_rpy[0], temp_orientation_rpy[1], temp_orientation_rpy[2])
+            mod_pose.orientation = temp_orientation_q
+
+            self.log_pose("mod_pose", mod_pose)
+
+        self.get_logger().info("--- floor_robot_kitting_PP_part() 7 ---")
+        
+        self.floor_robot_move_to_pose(mod_pose)
+
+        
+
+                
+            # self._floor_robot.set_start_state_to_current_state()
+
+
 
 
     def floor_robot_kitting_PP_tray(self):
@@ -725,6 +938,22 @@ class Robots(Node):
             self._floor_robot.set_goal_state(configuration_name="sm_test")
         self._plan_and_execute(self._ariac_robots, self._floor_robot,
                                self.get_logger(), "floor_robot", sleep_time=0.0)
+
+        # with self._planning_scene_monitor.read_write() as scene:
+        #     scene.current_state.update()
+        #     self._ariac_robots_state = scene.current_state
+        #     self._floor_robot_home_quaternion = self._ariac_robots_state.get_pose("floor_gripper").orientation
+
+    def floor_arm_move_to_saved_position(self, position_name):
+        '''
+        floor_arm group positions
+        1. upright
+        '''
+        with self._planning_scene_monitor.read_write() as scene:
+            self._floor_arm.set_start_state(robot_state=scene.current_state)
+            self._floor_arm.set_goal_state(configuration_name=position_name)
+        self._plan_and_execute(self._ariac_robots, self._floor_arm,
+                               self.get_logger(), "floor_arm", sleep_time=0.0)
 
         # with self._planning_scene_monitor.read_write() as scene:
         #     scene.current_state.update()
@@ -771,12 +1000,40 @@ class Robots(Node):
                 scene.current_state.update(True)
                 self._ariac_robots_state = scene.current_state
                 robot_trajectory = plan_result.trajectory
-            robot.execute(robot_trajectory, controllers=["floor_robot_controller", "linear_rail_controller"] if robot_type == "floor_robot" else ["ceiling_robot_controller","gantry_controller"])
+            robot.execute(robot_trajectory, controllers=["floor_robot_controller", "linear_rail_controller"] if robot_type == "floor_robot" else ["floor_robot_controller"] if robot_type == "floor_arm" else ["ceiling_robot_controller","gantry_controller"])
         else:
             logger.error("planning failed")
             return False
         return True
 
+    
+    def floor_robot_wait_for_attach(self, timeout: float):
+        pass
+
+    def floor_robot_set_gripper_state(self, state):
+        if self.floor_robot_gripper_state.enabled == state:
+            self.get_logger().warn(f"floor robot: redundant gripper state change to {self.gripper_states[state]}")
+            return
+        
+        request = VacuumGripperControl.Request()
+        request.enable = state
+
+        future = self.cli1.call_async(request)
+
+        while not future.done():
+            pass
+        
+        if future.result().success:
+            self.get_logger().info(f"gripper state changed to {self.gripper_states[state]}")
+        else:
+            self.get_logger().error("failed to change gripper state")
+
+
+    # utility functions
+
+
+
+    # display pose information
     def log_pose(self, text, pose: Pose):
         self.get_logger().info(f"{text}")
         self.get_logger().info(f"\tp.x {pose.position.x}")
@@ -786,6 +1043,19 @@ class Robots(Node):
         self.get_logger().info(f"\to.y {pose.orientation.y}")
         self.get_logger().info(f"\to.z {pose.orientation.z}")
         self.get_logger().info(f"\to.w {pose.orientation.w}")        
+
+    # convert rpy to quaternion
+
+
+    # convert quaternion to rpy
+
+
+    # load mesh files
+
+
+    # add collision object to planning scene
+    
+
 
 
 # Robots class ends here
@@ -947,6 +1217,8 @@ def main(args=None):
 
     # wait for threads to swim away after ros shutdown
     spin_thread.join()
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":
