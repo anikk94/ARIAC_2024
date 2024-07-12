@@ -627,39 +627,46 @@ class OrderProcessor(Node):
 
         o: Order = order["order_msg"]
 
+        order_log = []
+        order_log.append(f"Order ID: {o.id}")
+        order_log.append(f"Order Type: {o.type}")
+
+
         # if kitting or combined - start kitting
         if o.type == Order.KITTING or o.type == Order.COMBINED:
-            # self.get_logger().info(f"Kitting order parts:")
+
+            if o.type == Order.COMBINED:
+                # change this to real-time determine the agv_number and tray_id based on what is available in the environment
+                agv_number = 1
+                tray_id = 1
+            else: 
+                agv_number = o.kitting_task.agv_number
+                tray_id = o.kitting_task.tray_id
 
             # PP tray
-            # find tray
-            # ariac_env.find_tray()
-
-            # equip tray gripper
-            # ariac_env.robots.floor_robot_equip_tray_gripper()
-
-            # PP tray
-            ariac_env.robots.floor_robot_kitting_PP_tray(o.kitting_task.tray_id, o.kitting_task.agv_number)
+            ariac_env.robots.floor_robot_kitting_PP_tray(tray_id, agv_number)
+            order_log.append(f"Tray ID: {tray_id} placed on AGV: {agv_number}")
 
             for _part in o.kitting_task.parts:
                 _part: KittingPart
 
                 # find part, get pose
                 part_validated = ariac_env.find_part(_part.part)
-
                 # if a PartPose is returned
                 if part_validated:
 
                     # ariac_env.robots.floor_robot_pick_part(part_validated, _part.part.type)
                     # ariac_env.robots.floor_robot_flip_held_part(_part.part.type)
 
-                    ariac_env.robots.floor_robot_kitting_PP_part(part_validated, o.kitting_task.agv_number, _part.quadrant)
+                    ariac_env.robots.floor_robot_kitting_PP_part(part_validated, agv_number, _part.quadrant)
+                    order_log.append(f"Part: {_part.part.type, _part.part.color} placed on AGV: {agv_number} in quadrant: {_part.quadrant}")
 
                     # TODO
-                    # break
+                    # break??
                 else:
-                    self.get_logger().error(f"part missing {_part.part.type, _part.part.color}")
-                    break
+                    order_log.append(f"Missing Part: {_part.part.type, _part.part.color}")
+                    # self.get_logger().error(f"part missing {_part.part.type, _part.part.color}")
+                    # break
 
             # PP tray
             # for part in order
@@ -674,6 +681,13 @@ class OrderProcessor(Node):
             # move AGV if needed
             # for part in order
             # PP&A part
+
+        self.get_logger().info("")
+        self.get_logger().info("="*80)
+        for line in order_log:
+            self.get_logger().info(line)
+        self.get_logger().info("="*80)
+        self.get_logger().info("")
 
     # call the submit order service
 
