@@ -22,7 +22,9 @@ from ariac_msgs.msg import (
 from ariac_msgs.srv import (
     SubmitOrder,
     VacuumGripperControl,
-    ChangeGripper
+    ChangeGripper,
+    MoveAGV
+
 
 )
 from std_srvs.srv import Trigger
@@ -642,10 +644,17 @@ class OrderProcessor(Node):
             else: 
                 agv_number = o.kitting_task.agv_number
                 tray_id = o.kitting_task.tray_id
+            destination = o.kitting_task.destination
 
             # PP tray
             ariac_env.robots.floor_robot_kitting_PP_tray(tray_id, agv_number)
             order_log.append(f"Tray ID: {tray_id} placed on AGV: {agv_number}")
+
+            # lock tray on agv
+            if ariac_env.robots.lock_agv_tray(agv_number):
+                order_log.append(f"AGV {agv_number} locked tray {tray_id}")
+            else:
+                order_log.append(f"FAIL: AGV {agv_number} locked tray {tray_id}")
 
             for _part in o.kitting_task.parts:
                 _part: KittingPart
@@ -675,13 +684,20 @@ class OrderProcessor(Node):
                 # check dropped part
                 # check gripper fault
                 # move on next part
-            # lock and move AGV
+            # move AGV
+            if ariac_env.robots.move_agv(agv_number, destination):
+                order_log.append(f"AGV {agv_number} moved to destination {destination}")
+            else:
+                order_log.append(f"FAIL: AGV {agv_number} moved to destination {destination}")
 
         # if assembly or combined - start assembly
-            # move AGV if needed
-            # for part in order
-            # PP&A part
+        # perform_assembly()
+            # move AGV if needed - do this at top when setting destination, agv_number etc...
 
+
+
+
+        # print order log to stdout
         self.get_logger().info("")
         self.get_logger().info("="*80)
         for line in order_log:
@@ -774,6 +790,53 @@ class Sensors(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
     def get_pose_transform(self, parent_frame="world", child_frame=""):
+        '''
+        list of pre-existing transforms on tf tree
+        world
+        └─── agv1_track
+        |    └─── agv1_base
+        |         └─── agv1_tray
+        └─── agv2_track
+        |    └─── agv2_base
+        |         └─── agv2_tray
+        └─── agv3_track
+        |    └─── agv3_base
+        |         └─── agv3_tray
+        └─── agv4_track
+            └─── agv4_base
+                └─── agv4_tray
+        └─── long_rail_1 (frames for the ceiling robot)
+        |    └─── ...
+        └─── slide_bar (frames for the floor robot)
+             └─── ...
+        └─── right_bins_camera_frame
+        └─── left_bins_camera_frame
+        └─── ceiling_robot_camera_link
+        └─── bin1_frame
+        └─── bin2_frame
+        └─── bin3_frame
+        └─── bin4_frame
+        └─── bin5_frame
+        └─── bin6_frame
+        └─── bin7_frame
+        └─── bin8_frame
+        └─── as1_table_frame
+        |    └─── as1_insert_frame
+        └─── as2_table_frame
+        |    └─── as2_insert_frame
+        └─── as3_table_frame
+        |    └─── as3_insert_frame
+        └─── as4_table_frame
+            └─── as4_insert_frame
+        └─── kts1_table_frame
+        |    └─── kts1_tool_changer_parts_frame
+        |    └─── kts1_tool_changer_trays_frame
+        └─── kts2_table_frame
+            └─── kts2_tool_changer_parts_frame
+            └─── kts2_tool_changer_trays_frame
+        └─── conveyor_belt_base_frame
+            └─── conveyor_belt_part_spawn_frame
+        '''
         try:
             t = self.tf_buffer.lookup_transform(
                 parent_frame,
@@ -789,6 +852,24 @@ class Sensors(Node):
         p.position.y = t.transform.translation.y
         p.position.z = t.transform.translation.z
         return p
+
+    def get_world_pose(self, target_frame="world"):
+        try:
+            t = self.tf_buffer.lookup_transform(
+                "world",
+                target_frame,
+                rclpy.time.Time())
+        except TransformException as ex:
+            self.get_logger().info(
+                f'Could not transform world frame to {target_frame}: {ex}')
+            return
+        p = Pose()
+        p.orientation = t.transform.rotation
+        p.position.x = t.transform.translation.x
+        p.position.y = t.transform.translation.y
+        p.position.z = t.transform.translation.z
+        return p
+
 
     def sub1_cb(self, msg: AdvancedLogicalCameraImage):
         ariac_env.left_bins_camera = msg
@@ -888,6 +969,41 @@ class Robots(Node):
             ChangeGripper,
             "/ariac/floor_robot_change_gripper",
         )
+
+        self.cli3 = self.create_client(
+            Trigger,
+            "/ariac/agv1_lock_tray",
+        )
+        self.cli4 = self.create_client(
+            Trigger,
+            "/ariac/agv2_lock_tray",
+        )
+        self.cli5 = self.create_client(
+            Trigger,
+            "/ariac/agv3_lock_tray",
+        )
+        self.cli6 = self.create_client(
+            Trigger,
+            "/ariac/agv4_lock_tray",
+        )
+        self.cli7 = self.create_client(
+            MoveAGV,
+            "/ariac/move_agv1",
+        )
+        self.cli8 = self.create_client(
+            MoveAGV,
+            "/ariac/move_agv2",
+        )
+        self.cli9 = self.create_client(
+            MoveAGV,
+            "/ariac/move_agv3",
+        )
+        self.cli10 = self.create_client(
+            MoveAGV,
+            "/ariac/move_agv4",
+        )
+
+        # end of constructor
 
     # home
     #  linear_actuator_joint     :  0
@@ -1831,6 +1947,64 @@ class Robots(Node):
         self.floor_robot_move_to_robot_state(robot_config=robot_config)
 
 
+    # AGV functions
+    def lock_agv_tray(self, agv_number):
+        '''
+        call ariac service to lock the tray placed on agv {agv_number}
+        '''
+        request = Trigger.Request()
+        future = None
+
+        if agv_number == 1:
+            future = self.cli3.call_async(request)
+        elif agv_number == 2:
+            future = self.cli4.call_async(request)
+        elif agv_number == 3:
+            future = self.cli5.call_async(request)
+        elif agv_number == 4:
+            future = self.cli6.call_async(request)
+        else:
+            self.get_logger().error("what are you doing man?")
+            return False
+        
+        while not future.done():
+            pass
+        
+        if not future.result().success:
+            self.get_logger().error("Lock Tray Fail")
+            return False
+
+        return True
+
+    def move_agv(self, agv_number, destination):
+        # check if service is available
+
+        request = MoveAGV.Request()
+        request.location = destination
+        future = None
+
+        if agv_number == 1:
+            future = self.cli7.call_async(request)
+        elif agv_number == 2:
+            future = self.cli8.call_async(request)
+        elif agv_number == 3:
+            future = self.cli9.call_async(request)
+        elif agv_number == 4:
+            future = self.cli10.call_async(request)
+        else:
+            self.get_logger.error("it's not that kind of game")
+            return False
+
+        while not future.done():
+            pass
+
+        if not future.result().success:
+            self.get_logger().error("Move AGV Fail")
+            return False
+
+        self.get_logger().info(f"{future.result().message}")
+        return True
+
     # utility functions
 
     def log_pose(self, text, pose: Pose):
@@ -1962,89 +2136,6 @@ def main(args=None):
     # basic node execution
     # rclpy.spin(smallcatccs)
     # rclpy.shutdown()
-
-    # # code testing
-    # robots.get_logger().info(f"_ariac_robots")
-    # robots.get_logger().info(f"{type(ariac_env.robots._ariac_robots.__dir__())}")
-    # for i in ariac_env.robots._ariac_robots.__dir__():
-    #     robots.get_logger().info(f"{i}")
-    # # robots.get_logger().info(f"")
-
-    # robots.get_logger().info(f"--- _ariac_robots_state.get_planning_scene_monitor()")
-    # robots.get_logger().info(f"{type(ariac_env.robots._ariac_robots.get_planning_scene_monitor())}")
-    # for i in ariac_env.robots._ariac_robots.get_planning_scene_monitor().__dir__():
-    #     robots.get_logger().info(f"{i}")
-
-    # robots.get_logger().info(f"--- _ariac_robots_state.get_planning_scene_monitor().name")
-    # robots.get_logger().info(f"{type(ariac_env.robots._ariac_robots.get_planning_scene_monitor().name)}")
-    # robots.get_logger().info(ariac_env.robots._ariac_robots.get_planning_scene_monitor().name)
-
-    # # x = ariac_env.robots._ariac_robots.get_planning_scene_monitor().read_only()
-    # robots.get_logger().info(f"--- _ariac_robots_state.get_planning_scene_monitor().read_only()")
-    # # robots.get_logger().info(f"{type(x)}")
-    # # help(x)
-    # # robots.get_logger().info(str(help(x)))
-    # # y = dir(x)
-    # # for i in y:
-    # #     robots.get_logger().info(i)
-
-    # # robots.get_logger().info(f"{x.current_state}")
-
-    # with ariac_env.robots._ariac_robots.get_planning_scene_monitor().read_only() as scene:
-    #     robots.get_logger().info(f"{scene}")
-    #     robots.get_logger().info(f"{dir(scene)}")
-    #     a = dir(scene)
-    #     for i in a:
-    #         robots.get_logger().info(i)
-    #     # robots.get_logger().info(f"{dir(scene)}")
-
-    #     robots.get_logger().info("")
-
-    #     robots.get_logger().info(f"{scene.current_state}")
-    #     robots.get_logger().info(f"{dir(scene.current_state)}")
-    #     b = dir(scene.current_state)
-    #     for i in b:
-    #         robots.get_logger().info(i)
-
-    #     # robots.get_logger().info(f"{scene.current_state.state_tree}")
-
-    #     robots.get_logger().info(f"--- {scene.current_state.robot_model}")
-    #     robots.get_logger().info(f"{type(scene.current_state.robot_model)}")
-    #     c = dir(scene.current_state.robot_model)
-    #     for i in c:
-    #         robots.get_logger().info(f"{i}")
-    #     # robots.get_logger().info(f"{scene.current_state.robot_model}")
-
-    # robots.get_logger().info(f"{(scene.current_state.robot_model.joint_model_group_names)}")
-    # robots.get_logger().info(f"{(scene.current_state.robot_model.joint_model_groups)}")
-    #     for i in scene.current_state.robot_model.joint_model_groups:
-    #         robots.get_logger().info(f"{(i.link_model_names)}")
-    #         robots.get_logger().info(f"{(i.joint_model_names)}")
-    #         robots.get_logger().info(f"---")
-
-    #     d = scene.current_state.get_pose('floor_gripper')
-    #     robots.get_logger().info(f"{type(d)}")
-    #     robots.get_logger().info(f"{d.position.x}")
-    #     robots.get_logger().info(f"{d.position.y}")
-    #     robots.get_logger().info(f"{d.position.z}")
-    #     robots.get_logger().info(f"{d.orientation.x}")
-    #     robots.get_logger().info(f"{d.orientation.y}")
-    #     robots.get_logger().info(f"{d.orientation.z}")
-    #     robots.get_logger().info(f"{d.orientation.w}")
-
-    # robots.get_logger().info(f"--- _ariac_robots.get_planning_component('floor_robot')")
-    # for i in ariac_env.robots._ariac_robots.get_planning_component("floor_robot").__dir__():
-    #     robots.get_logger().info(f"{i}")
-    #     # robots.get_logger().info(f"{type(i)}")
-
-    # robots.get_logger().info(f"--- _ariac_robots.get_planning_component('floor_robot').named_target_states")
-    # robots.get_logger().info(f"{ariac_env.robots._ariac_robots.get_planning_component('floor_robot').named_target_states}")
-    # robots.get_logger().info(f"_ariac_robots.get_planning_component('floor_robot').get_named_target_state_values('home').items()")
-    # for k, v in ariac_env.robots._ariac_robots.get_planning_component('floor_robot').get_named_target_state_values('home').items():
-    #     print(k, ":", v)
-    # robots.get_logger().info(f"{ariac_env.robots._ariac_robots.get_planning_component('floor_robot').get_named_target_state_values('home')}")
-    # print(f">> {ariac_env.robots._ariac_robots.get_planning_component('floor_robot').__dir__()}")
-    # print(f">> {ariac_env.robots._ariac_robots.get_planning_component('floor_robot').planning_group_name}")
 
     # control ccs state outside of the class
     while rclpy.ok():
