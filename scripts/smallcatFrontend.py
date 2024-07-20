@@ -18,6 +18,7 @@ from ariac_msgs.msg import (
     Part,
     KittingPart,
     VacuumGripperState,
+    AGVStatus
 )
 from ariac_msgs.srv import (
     SubmitOrder,
@@ -136,37 +137,45 @@ class ARIACenv:
     # agv tray held
     # agv status?
     agv_1 = {
-        "location": 4.8,
+        # "location": 4.8,
+        "location": None,
         "tray": None,
     }
     agv_2 = {
-        "location": 1.2,
+        # "location": 1.2,
+        "location": None,
         "tray": None,
     }
     agv_3 = {
-        "location": -1.2,
+        # "location": -1.2,
+        "location": None,
         "tray": None,
     }
     agv_4 = {
-        "location": -4.8,
+        # "location": -4.8,
+        "location": None,
         "tray": None,
     }
     agv = {
         1: {
             # add other position/location info here
-            "location": 4.8,
+            # "location": 4.8,
+            "location": None,
             "tray": None,
         },
         2: {
-            "location": 1.2,
+            # "location": 1.2,
+            "location": None,
             "tray": None,
         },
         3: {
-            "location": -1.2,
+            # "location": -1.2,
+            "location": None,
             "tray": None,
         },
         4: {
-            "location": -4.8,
+            # "location": -4.8,
+            "location": None,
             "tray": None,
         },
     }
@@ -200,12 +209,35 @@ class ARIACenv:
         # TODO
         Part.PUMP: [0.1, 0.1, 0.12],
         # TODO
-        Part.SENSOR: [],
+        Part.SENSOR: [0.1, 0.1, 0.07],
         # TODO
-        Part.REGULATOR: [],
+        Part.REGULATOR: [0.1, 0.1, 0.07],
+    }
+    part_dimensions = {
+        Part.BATTERY: [0.13, 0.05, 0.04],
+        # TODO
+        Part.PUMP: [0.1, 0.1, 0.12],
+        # TODO
+        Part.SENSOR: [0.1, 0.1, 0.07],
+        # TODO
+        Part.REGULATOR: [0.1, 0.1, 0.07],
+    }
+    part_dimensions_dict = {
+        Part.BATTERY: {"L":0.13, "W":0.05, "H":0.04},
+        # TODO
+        Part.PUMP: {"L":0.1, "W":0.1, "H":0.12},
+        # TODO
+        Part.SENSOR: {"L":0.1, "W":0.1, "H":0.07},
+        # TODO
+        Part.REGULATOR: {"L":0.1, "W":0.1, "H":0.07},
     }
 
     tray_size = {
+        "L": 0.52,
+        "W": 0.38,
+        "H": 0.01,
+    }
+    tray_dimensions = {
         "L": 0.52,
         "W": 0.38,
         "H": 0.01,
@@ -229,6 +261,9 @@ class ARIACenv:
         pass
 
     def find_tray(self):
+        '''
+        ariac default tf tree supplies this information
+        '''
         pass
 
     def find_part(self, part: Part) -> PartPose:
@@ -637,13 +672,13 @@ class OrderProcessor(Node):
         # if kitting or combined - start kitting
         if o.type == Order.KITTING or o.type == Order.COMBINED:
 
-            if o.type == Order.COMBINED:
-                # change this to real-time determine the agv_number and tray_id based on what is available in the environment
-                agv_number = 1
-                tray_id = 1
-            else: 
-                agv_number = o.kitting_task.agv_number
-                tray_id = o.kitting_task.tray_id
+            # if o.type == Order.COMBINED:
+            #     # change this to real-time determine the agv_number and tray_id based on what is available in the environment
+            #     agv_number = 1
+            #     tray_id = 1
+            # else: 
+            agv_number = o.kitting_task.agv_number
+            tray_id = o.kitting_task.tray_id
             destination = o.kitting_task.destination
 
             # PP tray
@@ -691,9 +726,33 @@ class OrderProcessor(Node):
                 order_log.append(f"FAIL: AGV {agv_number} moved to destination {destination}")
 
         # if assembly or combined - start assembly
-        # perform_assembly()
-            # move AGV if needed - do this at top when setting destination, agv_number etc...
+        if o.type == Order.ASSEMBLY:
 
+            agv_numbers = o.assembly_task.agv_numbers
+            station = o.assembly_task.station
+
+            # check if agvs are in the right location to begin assembly
+            for agv_number in agv_numbers:
+                if not ariac_env.robots.agv_location_check(agv_number, station):
+                    if station > 2:
+                        ariac_env.robots.move_agv(agv_number, AGVStatus.ASSEMBLY_BACK)
+                        order_log.append(f"agv {agv_number} moved to assembly station {station}")
+                    else:
+                        ariac_env.robots.move_agv(agv_number, AGVStatus.ASSEMBLY_FRONT)
+                        order_log.append(f"agv {agv_number} moved to assembly station {station}")
+
+            for _part in o.assembly_task.parts:
+            # for _part in o.assembly_task.parts:
+                quadrant = 1
+                agv_number = 1
+                ariac_env.robots.ceiling_robot_assembly_PP_part(_part, agv_number, quadrant, station)
+                break
+
+        if o.type == Order.COMBINED:
+            pass
+            # do kitting
+
+            # do assembly
 
 
 
@@ -907,6 +966,10 @@ class Robots(Node):
     robots node
     sub1 - floor robot gripper state
     sub2 - ceiling robot gripper state
+    sub3 - agv1 status
+    sub4 - agv2 status
+    sub5 - agv3 status
+    sub6 - agv4 status
     cli1 - floor robot gripper client
     cli2 - ceiling robot gripper client
     cb_group_1 - [ME] gripper state
@@ -915,9 +978,19 @@ class Robots(Node):
     def __init__(self):
         super().__init__("Robots")
 
+        self.floor_robot_gripper_state = None
+        self.ceiling_robot_gripper_state = None
+
         self.gripper_states = {
             True: "enabled",
             False: "disabled",
+        }
+
+        self.agv = {
+            1: {"location": 99},
+            2: {"location": 99},
+            3: {"location": 99},
+            4: {"location": 99},
         }
 
         self.cb_group_1 = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
@@ -952,6 +1025,10 @@ class Robots(Node):
         self.get_position_fk_client = self.create_client(
             GetPositionFK, "compute_fk")
 
+        # -----------
+        # SUBSCRIBERS
+        # -----------
+
         self.sub1 = self.create_subscription(
             VacuumGripperState,
             "/ariac/floor_robot_gripper_state",
@@ -959,10 +1036,54 @@ class Robots(Node):
             10,
             callback_group=self.cb_group_1,
         )
+        self.sub2 = self.create_subscription(
+            VacuumGripperState,
+            "/ariac/ceiling_robot_gripper_state",
+            self.sub2_cb,
+            10,
+            callback_group=self.cb_group_1,
+        )
+        self.sub3 = self.create_subscription(
+            AGVStatus,
+            "/ariac/agv1_status",
+            self.sub3_cb,
+            10,
+            callback_group=self.cb_group_1,
+        )
+        self.sub4 = self.create_subscription(
+            AGVStatus,
+            "/ariac/agv2_status",
+            self.sub4_cb,
+            10,
+            callback_group=self.cb_group_1,
+        )
+        self.sub5 = self.create_subscription(
+            AGVStatus,
+            "/ariac/agv3_status",
+            self.sub5_cb,
+            10,
+            callback_group=self.cb_group_1,
+        )
+        self.sub6 = self.create_subscription(
+            AGVStatus,
+            "/ariac/agv4_status",
+            self.sub6_cb,
+            10,
+            callback_group=self.cb_group_1,
+        )
+
+        # ---------------
+        # SERVICE CLIENTS
+        # ---------------
 
         self.cli1 = self.create_client(
             VacuumGripperControl,
             "/ariac/floor_robot_enable_gripper",
+        )
+
+        self.cli11 = self.create_client(
+            VacuumGripperControl,
+            "/ariac/ceiling_robot_enable_gripper",
         )
 
         self.cli2 = self.create_client(
@@ -1003,7 +1124,12 @@ class Robots(Node):
             "/ariac/move_agv4",
         )
 
-        # end of constructor
+        with self._planning_scene_monitor.read_only() as scene:
+            scene.current_state.update()
+            self.horizontal_gripper_orientation = scene.current_state.get_pose("floor_gripper").orientation
+        
+
+    # end of constructor
 
     # home
     #  linear_actuator_joint     :  0
@@ -1014,22 +1140,28 @@ class Robots(Node):
     #  floor_wrist_2_joint       : -1.571
     #  floor_wrist_3_joint       :  0.0
 
-    # List of functions:
-    # 1.  sub1_cb
-    # 2.  floor_robot_kitting_PP_part
-    # 3.  floor_robot_kitting_PP_tray
-    # 4.  floor_robot_equip_tray_gripper
-    # 5.  floor_robot_equip_part_gripper
-    # 6.  floor_robot_move_home_position
-    # 7.  floor_robot_move_test_position
-    # 8.  floor_arm_move_to_saved_position
-    # 9.  floor_robot_move_to_pose
-    # 10. floor_robot_wait_for_attach
-    # 11. floor_robot_set_gripper_state
-    # 12. log_pose
+    # --------------------
+    # SUBSCRIBER CALLBACKS
+    # --------------------
 
     def sub1_cb(self, msg: VacuumGripperState):
         self.floor_robot_gripper_state = msg
+    def sub2_cb(self, msg: VacuumGripperState):
+        self.ceiling_robot_gripper_state = msg
+    def sub3_cb(self, msg: AGVStatus):
+        self.agv[1]["location"] = msg
+    def sub4_cb(self, msg: AGVStatus):
+        self.agv[2]["location"] = msg
+    def sub5_cb(self, msg: AGVStatus):
+        self.agv[3]["location"] = msg
+    def sub6_cb(self, msg: AGVStatus):
+        self.agv[4]["location"] = msg
+
+    # =========================================================================
+    #
+    # high level robot funcitons
+    #
+    # =========================================================================
 
     def move_around(self):
         self.get_logger().info("moving around")
@@ -1047,6 +1179,91 @@ class Robots(Node):
             0.3,
             0.3,
             False)
+
+
+
+    def ceiling_robot_assembly_PP_part(self, part_pose: PartPose, agv_number: int, quadrant: int, station: int):
+        # move to agv part pick location
+            # move torso to location
+            goal_pose = ariac_env.sensors.get_world_pose(f"agv{agv_number}_tray")
+            goal_pose.position.x += 1
+            # with self._planning_scene_monitor.read_only() as scene:
+            #     scene.current_state.update()
+            #     goal_pose.orientation = scene.current_state.get_pose("ceiling_gripper").orientation
+            # self.log_pose("ceiling robot goal pose", goal_pose)
+            # self.ceiling_robot_move_to_pose(goal_pose)
+            
+            # rotate torso such that robot base is facing agv
+            self.ceiling_torso_move_to_pose(goal_pose)
+
+
+        # pick part
+            
+            # activate gripper
+            self.ceiling_robot_set_gripper_state(True)
+
+            # move gripper to part location
+                # approach position
+            goal_pose = Pose()
+            goal_pose.position.x = part_pose.pose.position.x
+            goal_pose.position.y = part_pose.pose.position.y
+            goal_pose.position.z = part_pose.pose.position.z + ariac_env.part_dimensions_dict[part_pose.part.type]["H"] + 0.1
+            with self._planning_scene_monitor.read_write() as scene:
+                scene.current_state.update()
+                goal_pose.orientation = scene.current_state.get_pose("ceiling_gripper").orientation
+            self.ceiling_robot_move_to_pose(goal_pose)
+                # pick position
+            goal_pose.position.z -= 0.1
+            self.ceiling_robot_move_to_pose(goal_pose)
+
+            # retract gripper
+            goal_pose.position.z += 0.1
+            self.ceiling_robot_move_to_pose(goal_pose)
+
+
+        # move to station part place location
+            # move torso to station location
+            goal_pose = ariac_env.sensors.get_world_pose(f"as{station}_insert_frame")
+            goal_pose.position.x += 1
+            self.ceiling_torso_move_to_pose(goal_pose)
+
+            # rotate torso such that robot base is facing station
+
+        # place part
+
+    def ceiling_robot_move_to_pose(self, target_pose):
+        with self._planning_scene_monitor.read_write() as scene:
+            scene.current_state.update()
+            self._ceiling_robot.set_start_state_to_current_state()
+
+            pose_goal = PoseStamped()
+            pose_goal.header.frame_id = "world"
+            pose_goal.pose = target_pose
+            self._ceiling_robot.set_goal_state(
+                pose_stamped_msg=pose_goal, pose_link="ceiling_gripper"
+            )
+        while not self._plan_and_execute(self._ariac_robots,
+                                         self._ceiling_robot,
+                                         self.get_logger(),
+                                         "ceiling_robot"):
+            pass
+
+    def ceiling_torso_move_to_pose(self, target_pose):
+        with self._planning_scene_monitor.read_write() as scene:
+            scene.current_state.update()
+            self._ceiling_robot.set_start_state(robot_state=scene.current_state)
+            joint_values = {
+                "gantry_x_axis_joint": target_pose.position.x + 7,
+                "gantry_y_axis_joint": -target_pose.position.y,
+                "gantry_rotation_joint": math.pi/2,
+            }
+            scene.current_state.joint_positions = joint_values
+            joint_constraint = construct_joint_constraint(
+                robot_state=scene.current_state,
+                joint_model_group=self._ariac_robots.get_robot_model().get_joint_model_group("ceiling_robot"),
+            )
+            self._ceiling_robot.set_goal_state(motion_plan_constraints=[joint_constraint])
+        self._plan_and_execute(self._ariac_robots, self._ceiling_robot, self.get_logger(), "ceiling_robot")
 
     def floor_robot_pick_part(self, pose: Pose, type: int):
         '''
@@ -1658,7 +1875,29 @@ class Robots(Node):
         self.floor_robot_change_gripper("part", kts)
 
 
-    # low level movement functions
+    # =========================================================================
+    #
+    # ceiling robot low level movement functions 
+    #
+    # =========================================================================
+
+    def ceiling_robot_move_to_saved_position(self, position_name):
+        with self._planning_scene_monitor.read_write() as scene:
+            self._ceiling_robot.set_start_state(robot_state=scene.current_state)
+            self._ceiling_robot.set_goal_state(configuration_name=position_name)
+        self._plan_and_execute(
+            self._ariac_robots,
+            self._ceiling_robot,
+            self.get_logger(), 
+            "ceiling_robot", 
+            sleep_time=0.0,
+        )
+
+    # =========================================================================
+    #
+    # floor robot low level movement functions 
+    #
+    # =========================================================================
 
     def floor_robot_move_home_position(self):
         with self._planning_scene_monitor.read_write() as scene:
@@ -1688,6 +1927,8 @@ class Robots(Node):
         '''
         floor_arm group positions
         1. upright
+        2. sm_test
+        3. home
         '''
         with self._planning_scene_monitor.read_write() as scene:
             self._floor_arm.set_start_state(robot_state=scene.current_state)
@@ -1807,7 +2048,11 @@ class Robots(Node):
                 self.get_logger().error("unable to plan cartesian trajectory")
             return result.solution
 
+    # =========================================================================
+    #
     # basic moveit move function
+    #
+    # =========================================================================
 
     def _plan_and_execute(
             self,
@@ -1846,9 +2091,35 @@ class Robots(Node):
             logger.error("planning failed")
             return False
         return True
-
+    
+    # =========================================================================
+    #
     # gripper functions
+    #
+    # =========================================================================
+    def ceiling_robot_set_gripper_state(self, state):
+        '''
+        True/False -> activate/deactivate ceiling robot gripper suck
+        '''
+        if self.ceiling_robot_gripper_state.enabled == state:
+            self.get_logger().warn(
+                f"ceiling robot: redundant gripper state change to {self.gripper_states[state]}")
+            return
 
+        request = VacuumGripperControl.Request()
+        request.enable = state
+
+        future = self.cli11.call_async(request)
+
+        while not future.done():
+            pass
+
+        if future.result().success:
+            self.get_logger().info(
+                f"ceiling robot gripper state changed to {self.gripper_states[state]}")
+        else:
+            self.get_logger().error("failed to change ceiling robot gripper state")
+    
     def floor_robot_equip_tray_gripper(self):
         pass
 
@@ -1876,11 +2147,11 @@ class Robots(Node):
 
     def floor_robot_set_gripper_state(self, state):
         '''
-        True/False -> activate/deactivate gripper suck
+        True/False -> activate/deactivate floor_robot gripper suck
         '''
         if self.floor_robot_gripper_state.enabled == state:
             self.get_logger().warn(
-                f"floor robot: redundant gripper state change to {self.gripper_states[state]}")
+                f"floor robot: redundant floor_robot gripper state change to {self.gripper_states[state]}")
             return
 
         request = VacuumGripperControl.Request()
@@ -1893,10 +2164,10 @@ class Robots(Node):
 
         if future.result().success:
             self.get_logger().info(
-                f"gripper state changed to {self.gripper_states[state]}")
+                f"floor_robot gripper state changed to {self.gripper_states[state]}")
         else:
-            self.get_logger().error("failed to change gripper state")
-
+            self.get_logger().error("failed to change floor_robot gripper state")
+    
     def floor_robot_change_gripper(self, gripper_type: String, kts="kts1"):
         '''
         this function sets the gripper of the floor robot to the 
@@ -1946,8 +2217,12 @@ class Robots(Node):
         robot_config = [5.0,1.57,-1.57,1.57,-1.57,-1.57,0.0]
         self.floor_robot_move_to_robot_state(robot_config=robot_config)
 
-
+    # =========================================================================
+    #
     # AGV functions
+    #
+    # =========================================================================
+    
     def lock_agv_tray(self, agv_number):
         '''
         call ariac service to lock the tray placed on agv {agv_number}
@@ -2004,8 +2279,34 @@ class Robots(Node):
 
         self.get_logger().info(f"{future.result().message}")
         return True
+    
 
+    def agv_location_check(self, agv_number, station):
+        '''
+        check if AGV {agv_number} is at assembly station {station}
+        '''
+        agv_location = self.agv[agv_number]["location"]
+        if (station in [1, 2]):
+            if (agv_location == AGVStatus.ASSEMBLY_FRONT):
+                return True
+            else:
+                return False
+        if (station in [3, 4]):
+            if (agv_location == AGVStatus.ASSEMBLY_BACK):
+                return True
+            else:
+                return False
+        self.get_logger().error(f"invalid assembly station number {station}")
+        return False
+        
+            
+
+
+    # =========================================================================
+    #
     # utility functions
+    #
+    # =========================================================================
 
     def log_pose(self, text, pose: Pose):
         '''
@@ -2102,8 +2403,11 @@ class Robots(Node):
 
 # Robots class ends here
 
-
+# =============================================================================
+#
 # main
+#
+# =============================================================================
 def main(args=None):
     rclpy.init(args=args)
 
@@ -2171,77 +2475,3 @@ def main(args=None):
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     main()
-
-
-# ROBOTS
-# /agv1_controller/commands
-# /agv1_controller/transition_event
-# /agv2_controller/commands
-# /agv2_controller/transition_event
-# /agv3_controller/commands
-# /agv3_controller/transition_event
-# /agv4_controller/commands
-# /agv4_controller/transition_event
-# /ariac/agv1_status
-# /ariac/agv2_status
-# /ariac/agv3_status
-# /ariac/agv4_status
-# /ceiling_robot_controller/controller_state
-# /ceiling_robot_controller/joint_trajectory
-# /ceiling_robot_controller/transition_event
-# /ceiling_robot_static_controller/transition_event
-# /floor_robot_controller/controller_state
-# /floor_robot_controller/joint_trajectory
-# /floor_robot_controller/transition_event
-# /floor_robot_static_controller/transition_event
-# /gantry_controller/controller_state
-# /gantry_controller/joint_trajectory
-# /gantry_controller/transition_event
-# /linear_rail_controller/controller_state
-# /linear_rail_controller/joint_trajectory
-# /linear_rail_controller/transition_event
-# /ariac/robot_health
-
-# /controller_manager/robot_description
-# /dynamic_joint_states
-# /robot_description
-# /joint_state_broadcaster/transition_event
-# /joint_states
-
-# ARIAC COMPONENTS
-# /ariac/assembly_insert_1_assembly_state
-# /ariac/assembly_insert_2_assembly_state
-# /ariac/assembly_insert_3_assembly_state
-# /ariac/assembly_insert_4_assembly_state
-# /ariac/bin_parts
-# /ariac/ceiling_robot_gripper_state
-# /ariac/competition_state
-# /ariac/conveyor_parts
-# /ariac/conveyor_state
-# /ariac/environment_ready
-# /ariac/floor_robot_gripper_state
-# /ariac/orders
-# /ariac/trial_config
-# /clock
-# /diagnostics
-# /parameter_events
-# /performance_metrics
-
-# ROS
-# /rosout
-# /tf
-# /tf_static
-
-# SENSORS
-# /ariac/sensor_health
-# /ariac/sensors/as1_camera/image
-# /ariac/sensors/as2_camera/image
-# /ariac/sensors/as3_camera/image
-# /ariac/sensors/as4_camera/image
-# /ariac/sensors/conveyor_breakbeam/change
-# /ariac/sensors/conveyor_breakbeam/status
-# /ariac/sensors/conveyor_camera/image
-# /ariac/sensors/kts1_camera/image
-# /ariac/sensors/kts2_camera/image
-# /ariac/sensors/left_bins_camera/image
-# /ariac/sensors/right_bins_camera/image

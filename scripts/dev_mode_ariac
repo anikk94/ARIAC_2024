@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+# Instructions: 
+# -------------
+# 1. when providing a trial_name argument, remove '.yaml' file extension
+
+# arguments
+trial_name=$1
+
+# ros2 launch ariac_gazebo ariac.launch.py \
+#  dev_mode:=true \
+#  ;
+
+# check if trial_name argument is valid by comparing with list of files in config/trials
+
+# launch ariac environment with trial, and sensor configuration
+#   arguments to ariac.launch.py
+#     - trial_name:=<> \
+#     - competitor_pkg:=<> \
+#     - sensor_config:=<> \
+#     - record_state:=true
+if [ -n "$trial_name" ]; then
+    echo "================================================================================"
+    echo " "
+    echo "trial_name -> $trial_name"
+    echo "competitor_pkg -> smallcat"
+    echo "sensor_config -> sensors"
+    echo " "
+    echo "================================================================================"
+    ros2 launch ariac_gazebo ariac.launch.py \
+    dev_mode:=true \
+    trial_name:="$trial_name" \
+    competitor_pkg:=smallcat \
+    sensor_config:=sensors \
+    ;
+else
+    echo "================================================================================"
+    echo " "
+    echo "trial_name -> !no trial_name provided! using default (kitting.yaml)"
+    echo "competitor_pkg -> smallcat"
+    echo "sensor_config -> sensors"
+    echo " "
+    echo "================================================================================"
+    ros2 launch ariac_gazebo ariac.launch.py \
+    dev_mode:=true \
+    competitor_pkg:=smallcat \
+    sensor_config:=sensors \
+    ;
+fi
+

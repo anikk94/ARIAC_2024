@@ -52,32 +52,81 @@ static_sensors:
       xyz: [-0.573, 3.915, 1.8]
       rpy: [pi/2, pi/2, 0]
 
-  as1_camera:
-    type: advanced_logical_camera
-    visualize_fov: true
-    pose:
-      xyz: [0.5, 5.8, 1.8]
-      rpy: [pi, pi/2, -pi/2]
+  # as1_camera:
+  #   type: advanced_logical_camera
+  #   visualize_fov: true
+  #   pose:
+  #     xyz: [0.5, 5.8, 1.8]
+  #     rpy: [pi, pi/2, -pi/2]
   
-  as2_camera:
-    type: advanced_logical_camera
-    visualize_fov: true
-    pose:
-      xyz: [0.5, 5.8, 1.8]
-      rpy: [pi, pi/2, -pi/2]
+  # as2_camera:
+  #   type: advanced_logical_camera
+  #   visualize_fov: true
+  #   pose:
+  #     xyz: [0.5, 5.8, 1.8]
+  #     rpy: [pi, pi/2, -pi/2]
   
-  as3_camera:
-    type: advanced_logical_camera
-    visualize_fov: true
-    pose:
-      xyz: [0.5, 5.8, 1.8]
-      rpy: [pi, pi/2, -pi/2]
+  # as3_camera:
+  #   type: advanced_logical_camera
+  #   visualize_fov: true
+  #   pose:
+  #     xyz: [0.5, 5.8, 1.8]
+  #     rpy: [pi, pi/2, -pi/2]
   
-  as4_camera:
+  # as4_camera:
+  #   type: advanced_logical_camera
+  #   visualize_fov: true
+  #   pose:
+  #     xyz: [0.5, 5.8, 1.8]
+  #     rpy: [pi, pi/2, -pi/2]
+
+  agv1_as1_camera:
     type: advanced_logical_camera
     visualize_fov: true
     pose:
-      xyz: [0.5, 5.8, 1.8]
+      xyz: [-7.673742, 4.786616, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv1_as2_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-12.691347, 4.786616, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv2_as1_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-7.673742, 1.197786, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv2_as2_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-12.691347, 1.197786, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv3_as3_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-7.673742, -1.197786, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv3_as4_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-12.691347, -1.197786, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv4_as3_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-7.673742, -4.786616, 1.8]
+      rpy: [pi, pi/2, -pi/2]
+  agv4_as4_camera:
+    type: advanced_logical_camera
+    visualize_fov: true
+    pose:
+      xyz: [-12.691347, -4.786616, 1.8]
       rpy: [pi, pi/2, -pi/2]
 
     
